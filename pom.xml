@@ -32,6 +32,7 @@
 
     <modules>
         <module>user-service</module>
+        <module>wallet-service</module>
     </modules>
 
 </project>
