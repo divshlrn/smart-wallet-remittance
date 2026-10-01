@@ -10,6 +10,9 @@ import org.example.wallet.walletservice.exception.WalletAlreadyExistsException;
 import org.example.wallet.walletservice.repository.WalletRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.example.wallet.walletservice.entity.TransactionType;
+import org.example.wallet.walletservice.entity.WalletTransaction;
+import org.example.wallet.walletservice.repository.WalletTransactionRepository;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -19,9 +22,13 @@ import java.util.UUID;
 public class WalletServiceImpl implements WalletService {
 
     private final WalletRepository walletRepository;
+    private final WalletTransactionRepository walletTransactionRepository;
 
-    public WalletServiceImpl(WalletRepository walletRepository) {
+    public WalletServiceImpl(
+            WalletRepository walletRepository,
+            WalletTransactionRepository walletTransactionRepository) {
         this.walletRepository = walletRepository;
+        this.walletTransactionRepository = walletTransactionRepository;
     }
 
     @Override
@@ -75,6 +82,12 @@ public class WalletServiceImpl implements WalletService {
     @Transactional
     public WalletResponse creditWallet(UUID walletId, BigDecimal amount) {
 
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException(
+                    "Credit amount must be greater than zero"
+            );
+        }
+
         Wallet wallet = walletRepository.findById(walletId)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
@@ -88,11 +101,21 @@ public class WalletServiceImpl implements WalletService {
             );
         }
 
-        wallet.setBalance(
-                wallet.getBalance().add(amount)
-        );
+        BigDecimal balanceBefore = wallet.getBalance();
+        BigDecimal balanceAfter = balanceBefore.add(amount);
+
+        wallet.setBalance(balanceAfter);
 
         Wallet savedWallet = walletRepository.save(wallet);
+
+        WalletTransaction transaction = new WalletTransaction();
+        transaction.setWalletId(savedWallet.getId());
+        transaction.setTransactionType(TransactionType.CREDIT);
+        transaction.setAmount(amount);
+        transaction.setBalanceBefore(balanceBefore);
+        transaction.setBalanceAfter(balanceAfter);
+
+        walletTransactionRepository.save(transaction);
 
         return mapToResponse(savedWallet);
     }
@@ -116,6 +139,12 @@ public class WalletServiceImpl implements WalletService {
     @Transactional
     public WalletResponse debitWallet(UUID walletId, BigDecimal amount) {
 
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException(
+                    "Debit amount must be greater than zero"
+            );
+        }
+
         Wallet wallet = walletRepository.findById(walletId)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
@@ -129,23 +158,28 @@ public class WalletServiceImpl implements WalletService {
             );
         }
 
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException(
-                    "Debit amount must be greater than zero"
-            );
-        }
+        BigDecimal balanceBefore = wallet.getBalance();
 
-        if (wallet.getBalance().compareTo(amount) < 0) {
+        if (balanceBefore.compareTo(amount) < 0) {
             throw new InsufficientBalanceException(
                     "Insufficient balance for this transaction"
             );
         }
 
-        wallet.setBalance(
-                wallet.getBalance().subtract(amount)
-        );
+        BigDecimal balanceAfter = balanceBefore.subtract(amount);
+
+        wallet.setBalance(balanceAfter);
 
         Wallet savedWallet = walletRepository.save(wallet);
+
+        WalletTransaction transaction = new WalletTransaction();
+        transaction.setWalletId(savedWallet.getId());
+        transaction.setTransactionType(TransactionType.DEBIT);
+        transaction.setAmount(amount);
+        transaction.setBalanceBefore(balanceBefore);
+        transaction.setBalanceAfter(balanceAfter);
+
+        walletTransactionRepository.save(transaction);
 
         return mapToResponse(savedWallet);
     }
