@@ -3,32 +3,43 @@ package org.example.wallet.walletservice.service;
 import org.example.wallet.walletservice.dto.CreateWalletRequest;
 import org.example.wallet.walletservice.dto.WalletResponse;
 import org.example.wallet.walletservice.entity.Wallet;
-import org.example.wallet.walletservice.entity.WalletStatus;
-import org.example.wallet.walletservice.exception.InsufficientBalanceException;
 import org.example.wallet.walletservice.exception.ResourceNotFoundException;
 import org.example.wallet.walletservice.exception.WalletAlreadyExistsException;
 import org.example.wallet.walletservice.repository.WalletRepository;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.example.wallet.walletservice.entity.TransactionType;
-import org.example.wallet.walletservice.entity.WalletTransaction;
 import org.example.wallet.walletservice.repository.WalletTransactionRepository;
-
+import org.example.wallet.walletservice.entity.IdempotencyRecord;
+import org.example.wallet.walletservice.repository.IdempotencyRecordRepository;
+import org.springframework.web.server.ResponseStatusException;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.example.wallet.walletservice.dto.WalletTransactionResponse;
+import org.example.wallet.walletservice.entity.WalletTransaction;
+
 
 @Service
 public class WalletServiceImpl implements WalletService {
 
     private final WalletRepository walletRepository;
     private final WalletTransactionRepository walletTransactionRepository;
+    private final IdempotencyRecordRepository idempotencyRecordRepository;
+    private final WalletOperationProcessor walletOperationProcessor;
 
     public WalletServiceImpl(
             WalletRepository walletRepository,
-            WalletTransactionRepository walletTransactionRepository) {
+            WalletTransactionRepository walletTransactionRepository,
+            IdempotencyRecordRepository idempotencyRecordRepository,
+            WalletOperationProcessor walletOperationProcessor) {
+
         this.walletRepository = walletRepository;
         this.walletTransactionRepository = walletTransactionRepository;
+        this.idempotencyRecordRepository = idempotencyRecordRepository;
+        this.walletOperationProcessor = walletOperationProcessor;
     }
 
     @Override
@@ -79,109 +90,109 @@ public class WalletServiceImpl implements WalletService {
     }
 
     @Override
-    @Transactional
-    public WalletResponse creditWallet(UUID walletId, BigDecimal amount) {
+    public WalletResponse creditWallet(
+            UUID walletId, BigDecimal amount, String idempotencyKey) {
 
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException(
-                    "Credit amount must be greater than zero"
-            );
+        try {
+            return walletOperationProcessor.creditWallet(
+                    walletId, amount, idempotencyKey);
+
+        } catch (DataIntegrityViolationException ex) {
+            return recoverIdempotentRequest(
+                    walletId, amount, idempotencyKey,
+                    TransactionType.CREDIT, ex);
+
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            return recoverIdempotentRequest(
+                    walletId, amount, idempotencyKey,
+                    TransactionType.CREDIT, ex);
         }
-
-        Wallet wallet = walletRepository.findById(walletId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Wallet not found with id: " + walletId
-                        )
-                );
-
-        if (wallet.getStatus() != WalletStatus.ACTIVE) {
-            throw new IllegalStateException(
-                    "Cannot credit an inactive wallet"
-            );
-        }
-
-        BigDecimal balanceBefore = wallet.getBalance();
-        BigDecimal balanceAfter = balanceBefore.add(amount);
-
-        wallet.setBalance(balanceAfter);
-
-        Wallet savedWallet = walletRepository.save(wallet);
-
-        WalletTransaction transaction = new WalletTransaction();
-        transaction.setWalletId(savedWallet.getId());
-        transaction.setTransactionType(TransactionType.CREDIT);
-        transaction.setAmount(amount);
-        transaction.setBalanceBefore(balanceBefore);
-        transaction.setBalanceAfter(balanceAfter);
-
-        walletTransactionRepository.save(transaction);
-
-        return mapToResponse(savedWallet);
     }
 
-    private WalletResponse mapToResponse(Wallet wallet) {
-
-        WalletResponse response = new WalletResponse();
-
-        response.setId(wallet.getId());
-        response.setUserId(wallet.getUserId());
-        response.setCurrency(wallet.getCurrency());
-        response.setBalance(wallet.getBalance());
-        response.setStatus(wallet.getStatus());
-        response.setCreatedAt(wallet.getCreatedAt());
-        response.setUpdatedAt(wallet.getUpdatedAt());
-
-        return response;
-    }
 
     @Override
-    @Transactional
-    public WalletResponse debitWallet(UUID walletId, BigDecimal amount) {
+    public WalletResponse debitWallet(
+            UUID walletId, BigDecimal amount, String idempotencyKey) {
 
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException(
-                    "Debit amount must be greater than zero"
-            );
+        try {
+            return walletOperationProcessor.debitWallet(
+                    walletId, amount, idempotencyKey);
+
+        } catch (DataIntegrityViolationException ex) {
+            return recoverIdempotentRequest(
+                    walletId, amount, idempotencyKey,
+                    TransactionType.DEBIT, ex);
+
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            return recoverIdempotentRequest(
+                    walletId, amount, idempotencyKey,
+                    TransactionType.DEBIT, ex);
+        }
+    }
+
+
+
+    private WalletResponse recoverIdempotentRequest(
+            UUID walletId,
+            BigDecimal amount,
+            String idempotencyKey,
+            TransactionType operationType,
+            RuntimeException originalException) {
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+
+            IdempotencyRecord record = idempotencyRecordRepository
+                    .findByIdempotencyKey(idempotencyKey)
+                    .orElse(null);
+
+            if (record != null) {
+                boolean sameRequest =
+                        record.getWalletId().equals(walletId)
+                                && record.getOperationType() == operationType
+                                && amount != null
+                                && record.getAmount().compareTo(amount) == 0;
+
+                if (sameRequest) {
+                    Wallet wallet = walletRepository.findById(walletId)
+                            .orElseThrow(() -> new ResourceNotFoundException(
+                                    "Wallet not found with id: " + walletId));
+
+                    WalletResponse response = WalletResponse.from(wallet);
+                    response.setBalance(record.getBalanceAfter());
+                    return response;
+                }
+
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Idempotency key was already used for a different request");
+            }
         }
 
-        Wallet wallet = walletRepository.findById(walletId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Wallet not found with id: " + walletId
-                        )
-                );
-
-        if (wallet.getStatus() != WalletStatus.ACTIVE) {
-            throw new IllegalStateException(
-                    "Wallet is not active"
-            );
+        if (originalException instanceof ObjectOptimisticLockingFailureException) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Wallet was modified by another request. Please retry.",
+                    originalException);
         }
 
-        BigDecimal balanceBefore = wallet.getBalance();
+        throw originalException;
+    }
 
-        if (balanceBefore.compareTo(amount) < 0) {
-            throw new InsufficientBalanceException(
-                    "Insufficient balance for this transaction"
-            );
+
+    @Override
+    public List<WalletTransactionResponse> getWalletTransactions(UUID walletId) {
+
+        // Verify that the wallet exists.
+        if (!walletRepository.existsById(walletId)) {
+            throw new ResourceNotFoundException(
+                    "Wallet not found with id: " + walletId);
         }
 
-        BigDecimal balanceAfter = balanceBefore.subtract(amount);
-
-        wallet.setBalance(balanceAfter);
-
-        Wallet savedWallet = walletRepository.save(wallet);
-
-        WalletTransaction transaction = new WalletTransaction();
-        transaction.setWalletId(savedWallet.getId());
-        transaction.setTransactionType(TransactionType.DEBIT);
-        transaction.setAmount(amount);
-        transaction.setBalanceBefore(balanceBefore);
-        transaction.setBalanceAfter(balanceAfter);
-
-        walletTransactionRepository.save(transaction);
-
-        return mapToResponse(savedWallet);
+        return walletTransactionRepository
+                .findByWalletIdOrderByCreatedAtDesc(walletId)
+                .stream()
+                .map(WalletTransactionResponse::from)
+                .toList();
     }
 
 

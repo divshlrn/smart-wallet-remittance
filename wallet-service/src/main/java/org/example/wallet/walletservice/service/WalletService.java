@@ -6,6 +6,7 @@ import org.example.wallet.walletservice.dto.WalletResponse;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import org.example.wallet.walletservice.dto.WalletTransactionResponse;
 
 public interface WalletService {
 
@@ -15,7 +16,9 @@ public interface WalletService {
 
     List<WalletResponse> getWalletsByUser(UUID userId);
 
-    WalletResponse creditWallet(UUID walletId, BigDecimal amount);
+    WalletResponse creditWallet(UUID walletId, BigDecimal amount, String idempotencyKey);
 
-    WalletResponse debitWallet(UUID walletId, BigDecimal amount);
+    WalletResponse debitWallet(UUID walletId, BigDecimal amount, String idempotencyKey);
+
+    List<WalletTransactionResponse> getWalletTransactions(UUID walletId);
 }

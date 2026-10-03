@@ -1,10 +1,7 @@
 package org.example.wallet.walletservice.controller;
 
 import jakarta.validation.Valid;
-import org.example.wallet.walletservice.dto.CreateWalletRequest;
-import org.example.wallet.walletservice.dto.CreditWalletRequest;
-import org.example.wallet.walletservice.dto.DebitWalletRequest;
-import org.example.wallet.walletservice.dto.WalletResponse;
+import org.example.wallet.walletservice.dto.*;
 import org.example.wallet.walletservice.service.WalletService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -55,10 +52,14 @@ public class WalletController {
     @PostMapping("/{walletId}/credit")
     public ResponseEntity<WalletResponse> creditWallet(
             @PathVariable UUID walletId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CreditWalletRequest request) {
 
-        WalletResponse response =
-                walletService.creditWallet(walletId, request.getAmount());
+        WalletResponse response = walletService.creditWallet(
+                walletId,
+                request.getAmount(),
+                idempotencyKey
+        );
 
         return ResponseEntity.ok(response);
     }
@@ -66,13 +67,24 @@ public class WalletController {
     @PostMapping("/{walletId}/debit")
     public ResponseEntity<WalletResponse> debitWallet(
             @PathVariable UUID walletId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody DebitWalletRequest request) {
 
         WalletResponse response = walletService.debitWallet(
                 walletId,
-                request.getAmount()
+                request.getAmount(),
+                idempotencyKey
         );
 
         return ResponseEntity.ok(response);
     }
+
+    @GetMapping("/{walletId}/transactions")
+    public ResponseEntity<List<WalletTransactionResponse>> getWalletTransactions(
+            @PathVariable UUID walletId) {
+
+        return ResponseEntity.ok(
+                walletService.getWalletTransactions(walletId));
+    }
+
 }
